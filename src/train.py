@@ -2,6 +2,7 @@ from typing import List, Optional
 
 import hydra
 from omegaconf import DictConfig
+from torch.utils.data import DataLoader
 from pytorch_lightning import (
     Callback,
     LightningDataModule,
@@ -10,8 +11,11 @@ from pytorch_lightning import (
     seed_everything,
 )
 from pytorch_lightning.loggers import LightningLoggerBase
+from torch.utils.data import Subset
+from sklearn.model_selection import train_test_split
 
 from src.utils import utils
+from src.utils.dataset import pad_collate_fn, CVSplit
 
 log = utils.get_logger(__name__)
 
@@ -34,6 +38,16 @@ def train(config: DictConfig) -> Optional[float]:
     # Init lightning datamodule
     log.info(f"Instantiating datamodule <{config.datamodule._target_}>")
     datamodule: LightningDataModule = hydra.utils.instantiate(config.datamodule)
+    datamodule.prepare_data()
+    target = datamodule.data_to_stratify if config.crossval.stratified else None
+    
+    # Init Cross validation class
+    cv = CVSplit(
+        n_splits=config.crossval.n_splits,
+        n_repeats=config.crossval.n_cv_run,
+        stratified=config.crossval.stratified,
+    )
+    datamodule.setup(stage="fit")
 
     # Init lightning model
     log.info(f"Instantiating model <{config.model._target_}>")
@@ -74,28 +88,64 @@ def train(config: DictConfig) -> Optional[float]:
 
     # Train the model
     log.info("Starting training!")
-    trainer.fit(model=model, datamodule=datamodule)
+    for fold_i, (train_valid_dataset, test_dataset) in enumerate(cv(datamodule, target)):
+        log.info(f"Training Fold: {fold_i + 1}/{config.crossval.n_splits * config.crossval.n_cv_run}")
 
-    # Evaluate model on test set, using the best model achieved during training
-    if config.get("test_after_training") and not config.trainer.get("fast_dev_run"):
-        log.info("Starting testing!")
-        trainer.test()
+        idx_train, idx_valid = train_test_split(
+            range(len(train_valid_dataset)), 
+            test_size=0.15, 
+            stratify=train_valid_dataset.dataset.labels[train_valid_dataset.indices]
+        )
+        train_dataset = Subset(train_valid_dataset, idx_train)
+        valid_dataset = Subset(train_valid_dataset, idx_valid)
 
-    # Make sure everything closed properly
-    log.info("Finalizing!")
-    utils.finish(
-        config=config,
-        model=model,
-        datamodule=datamodule,
-        trainer=trainer,
-        callbacks=callbacks,
-        logger=logger,
-    )
+        train_dataloader = DataLoader(
+            dataset=train_dataset,
+            batch_size=config.datamodule.batch_size,
+            shuffle=True,
+            num_workers=4,
+            collate_fn=pad_collate_fn,
+        )
+        valid_dataloader = DataLoader(
+            dataset=valid_dataset,
+            batch_size=config.datamodule.batch_size,
+            shuffle=True,
+            num_workers=4,
+            collate_fn=pad_collate_fn,
+        )
+        test_dataloader = DataLoader(
+            dataset=test_dataset,
+            batch_size=config.datamodule.batch_size,
+            shuffle=False,
+            num_workers=4,
+            collate_fn=pad_collate_fn,
+        )
+        trainer.fit(
+            model=model, 
+            train_dataloader=train_dataloader, 
+            val_dataloaders=valid_dataloader
+        )
 
-    # Print path to best checkpoint
-    log.info(f"Best checkpoint path:\n{trainer.checkpoint_callback.best_model_path}")
+        # Evaluate model on test set, using the best model achieved during training
+        if config.get("test_after_training") and not config.trainer.get("fast_dev_run"):
+            log.info("Starting testing!")
+            trainer.test(model=model, test_dataloaders=test_dataloader)
 
-    # Return metric score for hyperparameter optimization
-    optimized_metric = config.get("optimized_metric")
-    if optimized_metric:
-        return trainer.callback_metrics[optimized_metric]
+        # Make sure everything closed properly
+        log.info("Finalizing!")
+        utils.finish(
+            config=config,
+            model=model,
+            datamodule=datamodule,
+            trainer=trainer,
+            callbacks=callbacks,
+            logger=logger,
+        )
+
+        # Print path to best checkpoint
+        log.info(f"Best checkpoint path:\n{trainer.checkpoint_callback.best_model_path}")
+
+        # Return metric score for hyperparameter optimization
+        optimized_metric = config.get("optimized_metric")
+        if optimized_metric:
+            return trainer.callback_metrics[optimized_metric]

@@ -1,0 +1,14 @@
+_target_: src.models.deepmil_classification_model.DeepmilClassificationLitModel
+in_features: 2048
+out_features: 1
+d_model_attention: 128
+temperature: 1.0
+tiles_mlp_hidden: null
+mlp_dropout: null
+mlp_activation: 
+  _target_: torch.nn.Sigmoid
+lr: 0.001
+mlp_hidden: [256, 64]
+bias:  false
+n_tiles: 10000
+weight_decay: 0.0005

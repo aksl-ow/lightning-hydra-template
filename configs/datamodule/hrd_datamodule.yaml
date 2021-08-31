@@ -1,0 +1,16 @@
+_target_: src.datamodules.hrd_lightning_data_module.HRDLightningDataModule
+
+features_dir: /opt/storage/preprocessed/despot/features/features_slides_Q85_20x_BUNET_mocov2_coad
+clinic_data_file_train: /opt/storage/raw/despot/clinical_data/DespotOwkinClin20210413.tsv
+wsi_dir: /opt/storage/preprocessed/despot/slides_Q85_20x
+target_col: HRD.Y/N
+task: classification
+batch_size: 32
+clinic_data_file_test: null
+metadata_cols: ["patient_id", "sample_id", "wsi_path"]
+n_tiles: 10000
+transform: null
+split_data: "earliest_slide"
+encode: false
+path_to_autoencoder: "/workspace/hrd-ovarian-igr/models/HRD_classification_deepmil/autoencoder.pt"
+autoencoder_save_file: ${model_dir}/autoencoder-hrd-classification-${now:%Y-%m-%d}/${now:%H-%M-%S}
