@@ -50,7 +50,7 @@ class DeepmilClassificationLitModel(pl.LightningModule):
         else:
             self.criterion = torch.nn.BCEWithLogitsLoss()
         
-        self.train_auroc = AUROC(num_classes=self.hparams.out_features)
+        self.train_auroc = AUROC(num_classes=self.hparams.out_features,)
         self.val_auroc = AUROC(num_classes=self.hparams.out_features)
         self.test_auroc = AUROC(num_classes=self.hparams.out_features)
     
@@ -60,8 +60,8 @@ class DeepmilClassificationLitModel(pl.LightningModule):
         ).mean()
         y_hat = torch.cat(
             [outputs["y_hat"] for outputs in step_outputs]
-        ).numpy()
-        y = torch.cat([outputs["y"] for outputs in step_outputs]).numpy()
+        )
+        y = torch.cat([outputs["y"] for outputs in step_outputs])
         scores = torch.cat(
             [
                 F.pad(
@@ -107,6 +107,7 @@ class DeepmilClassificationLitModel(pl.LightningModule):
         prediction = {
             "y_hat": y_hat,
             "y": y,
+            "avg_loss": avg_loss,
             "coords": coords,
             "wsi_paths": wsi_paths,
             "sample_ids": sample_ids,
@@ -130,29 +131,30 @@ class DeepmilClassificationLitModel(pl.LightningModule):
             y_hat = torch.sigmoid(logits)
         
         outputs = {
-            "y_hat": y_hat.cpu().detach(),
-            "y": y.cpu().detach(),
+            "y_hat": y_hat,
+            "y": y,
+            "loss": loss,
             "scores": torch.squeeze(scores.cpu().detach(), -1),
             "coords": coords.cpu().detach(),
         }
         outputs.update(metadata)
 
-        return y_hat, y, loss, outputs
+        return loss, outputs
 
     def training_step(self, batch, batch_idx):
-        y_hat, y, loss, outputs = self.step(batch)
+        loss, outputs = self.step(batch)
 
         # log train metrics
-        auroc = self.train_auroc(y_hat, y.type(torch.long))
         self.log("train/loss", loss, on_step=False, on_epoch=True, prog_bar=False)
-        self.log("train/auroc", auroc, on_step=False, on_epoch=True, prog_bar=True)
-        for k, v in zip(["loss", "train_auroc"], [loss, auroc]):
-            outputs[k] = v
 
         return outputs
 
     def training_epoch_end(self, training_step_outputs):
         prediction = self.process_step_outputs(step_outputs=training_step_outputs)
+        auroc = self.train_auroc(prediction["y_hat"], prediction["y"].type(torch.long))
+        self.log("train/auroc", auroc, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train/avg_loss", prediction["avg_loss"], on_step=False, on_epoch=True, prog_bar=True)
+
         predictions_dir = (
             Path(self.logger[0].save_dir)
             / self.logger[0].experiment_id
@@ -167,34 +169,33 @@ class DeepmilClassificationLitModel(pl.LightningModule):
         )
     
     def validation_step(self, batch, batch_idx):
-        y_hat, y, loss, outputs = self.step(batch)
+        loss, outputs = self.step(batch)
 
         # log train metrics
-        auroc = self.train_auroc(y_hat, y.type(torch.long))
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=False)
-        self.log("val/auroc", auroc, on_step=False, on_epoch=True, prog_bar=True)
-        for k, v in zip(["loss", "val_auroc"], [loss, auroc]):
-            outputs[k] = v
 
         return outputs
 
-    def validation_epoch_end(self, training_step_outputs):
-        pass
+    def validation_epoch_end(self, valid_step_outputs):
+        prediction = self.process_step_outputs(step_outputs=valid_step_outputs)
+        auroc = self.train_auroc(prediction["y_hat"], prediction["y"].type(torch.long))
+        self.log("val/auroc", auroc, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val/avg_loss", prediction["avg_loss"], on_step=False, on_epoch=True, prog_bar=True)
     
     def test_step(self, batch, batch_idx):
-        y_hat, y, loss, outputs = self.step(batch)
+        loss, outputs = self.step(batch)
 
         # log train metrics
-        auroc = self.train_auroc(y_hat, y.type(torch.long))
         self.log("test/loss", loss, on_step=False, on_epoch=True, prog_bar=False)
-        self.log("test/auroc", auroc, on_step=False, on_epoch=True, prog_bar=True)
-        for k, v in zip(["loss", "test_auroc"], [loss, auroc]):
-            outputs[k] = v
 
         return outputs 
 
     def test_epoch_end(self, test_step_outputs):
         prediction = self.process_step_outputs(step_outputs=test_step_outputs)
+        auroc = self.train_auroc(prediction["y_hat"], prediction["y"].type(torch.long))
+        self.log("test/auroc", auroc, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("test/avg_loss", prediction["avg_loss"], on_step=False, on_epoch=True, prog_bar=True)
+
         predictions_dir = (
             Path(self.logger[0].save_dir)
             / self.logger[0].experiment_id
